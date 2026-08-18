@@ -140,10 +140,6 @@ type ListenerCfg struct {
 	RPCListeners []*ListenerWithSignal
 }
 
-var errStreamIsolationWithProxySkip = errors.New(
-	"while stream isolation is enabled, the TOR proxy may not be skipped",
-)
-
 // Main is the true entry point for lnd. It accepts a fully populated and
 // validated main configuration struct and an optional listener config struct.
 // This function starts all main system components then blocks until a signal
@@ -579,21 +575,14 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 		return mkErr("error deriving node key", err)
 	}
 
-	if cfg.Tor.StreamIsolation && cfg.Tor.SkipProxyForClearNetTargets {
-		return errStreamIsolationWithProxySkip
-	}
-
 	if cfg.Tor.Active {
-		if cfg.Tor.SkipProxyForClearNetTargets {
-			srvrLog.InfoS(ctx, "Onion services are accessible "+
-				"via Tor! NOTE: Traffic to clearnet services "+
-				"is not routed via Tor.")
-		} else {
-			srvrLog.InfoS(ctx, "Proxying all network traffic "+
-				"via Tor! NOTE: Ensure the backend node is "+
-				"proxying over Tor as well",
-				"stream_isolation", cfg.Tor.StreamIsolation)
-		}
+		srvrLog.InfoS(ctx, "Configured outbound network routing",
+			"mode", routingMode(cfg),
+			"stream_isolation", cfg.Tor.StreamIsolation,
+			"stream_isolation_scope", "Tor streams only")
+	} else {
+		srvrLog.InfoS(ctx, "Configured outbound network routing",
+			"mode", routingMode(cfg))
 	}
 
 	// If tor is active and a v3 onion service has been specified, make a

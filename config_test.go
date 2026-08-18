@@ -2,8 +2,10 @@ package lnd
 
 import (
 	"fmt"
+	"net"
 	"testing"
 
+	flags "github.com/jessevdk/go-flags"
 	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lncfg"
@@ -26,6 +28,7 @@ func TestConfigToFlatMap(t *testing.T) {
 	cfg.Tor.Password = testPassword
 	cfg.DB.Etcd.Pass = testPassword
 	cfg.DB.Postgres.Dsn = testPassword
+	cfg.SOCKS = "us%40er:p%3Ass@127.0.0.1:9050"
 
 	// Set deprecated fields.
 	cfg.Bitcoin.Active = true
@@ -54,6 +57,210 @@ func TestConfigToFlatMap(t *testing.T) {
 	require.Equal(t, redactedPassword, result["tor.password"])
 	require.Equal(t, redactedPassword, result["db.etcd.pass"])
 	require.Equal(t, redactedPassword, result["db.postgres.dsn"])
+	require.Equal(t, "[redacted]@127.0.0.1:9050", result["socks"])
+}
+
+// TestParseSOCKSProxy tests URL-compatible credential parsing and ensures the
+// normalized endpoint is returned separately from credentials.
+func TestParseSOCKSProxy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		proxy            string
+		expectedEndpoint string
+		expectedUser     string
+		expectedPassword string
+		expectErr        bool
+	}{
+		{
+			name:             "no authentication",
+			proxy:            "127.0.0.1:9050",
+			expectedEndpoint: "127.0.0.1:9050",
+		},
+		{
+			name:             "username only",
+			proxy:            "alice@127.0.0.1:9050",
+			expectedEndpoint: "127.0.0.1:9050",
+			expectedUser:     "alice",
+		},
+		{
+			name:             "escaped credentials",
+			proxy:            "us%40er:p%3Ass%2Fword@127.0.0.1:9050",
+			expectedEndpoint: "127.0.0.1:9050",
+			expectedUser:     "us@er",
+			expectedPassword: "p:ss/word",
+		},
+		{
+			name:             "IPv6 endpoint",
+			proxy:            "user:pass@[::1]:9050",
+			expectedEndpoint: "[::1]:9050",
+			expectedUser:     "user",
+			expectedPassword: "pass",
+		},
+		{
+			name:      "missing port",
+			proxy:     "127.0.0.1",
+			expectErr: true,
+		},
+		{
+			name:      "empty username",
+			proxy:     ":password@127.0.0.1:9050",
+			expectErr: true,
+		},
+		{
+			name:      "unescaped password fragment",
+			proxy:     "user:p#ss@127.0.0.1:9050",
+			expectErr: true,
+		},
+		{
+			name:      "scheme not accepted",
+			proxy:     "socks5://127.0.0.1:9050",
+			expectErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			endpoint, user, password, err := parseSOCKSProxy(
+				test.proxy, net.ResolveTCPAddr,
+			)
+			if test.expectErr {
+				require.Error(t, err)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, test.expectedEndpoint, endpoint)
+			require.Equal(t, test.expectedUser, user)
+			require.Equal(t, test.expectedPassword, password)
+		})
+	}
+}
+
+// TestConfigureNetworkModes verifies the five supported high-level routing
+// configurations and hybrid stream-isolation compatibility.
+func TestConfigureNetworkModes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		torActive   bool
+		skipTor     bool
+		socks       string
+		isolation   bool
+		expected    string
+		expectProxy bool
+	}{
+		{
+			name:     "direct clearnet",
+			expected: "direct clearnet",
+		},
+		{
+			name:     "proxied clearnet",
+			socks:    "127.0.0.1:1080",
+			expected: "clearnet SOCKS5",
+		},
+		{
+			name:        "all remote traffic through Tor",
+			torActive:   true,
+			expected:    "Tor",
+			expectProxy: true,
+		},
+		{
+			name:        "Tor onions and direct clearnet",
+			torActive:   true,
+			skipTor:     true,
+			isolation:   true,
+			expected:    "Tor onions plus direct clearnet",
+			expectProxy: true,
+		},
+		{
+			name:        "dual proxy",
+			torActive:   true,
+			skipTor:     true,
+			socks:       "127.0.0.1:1080",
+			isolation:   true,
+			expected:    "Tor onions plus clearnet SOCKS5",
+			expectProxy: true,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := DefaultConfig()
+			cfg.SOCKS = test.socks
+			cfg.Tor.Active = test.torActive
+			cfg.Tor.SkipProxyForClearNetTargets = test.skipTor
+			cfg.Tor.StreamIsolation = test.isolation
+
+			var user, password string
+			if test.socks != "" {
+				user = "user"
+				password = "password"
+			}
+			err := configureNetwork(&cfg, user, password)
+			require.NoError(t, err)
+			require.Equal(t, test.expected, routingMode(&cfg))
+
+			proxyNet, isProxy := cfg.net.(*tor.ProxyNet)
+			require.Equal(t, test.expectProxy, isProxy)
+			if isProxy {
+				require.Equal(t, test.skipTor,
+					proxyNet.SkipProxyForClearNetTargets)
+				require.Equal(t, test.isolation,
+					proxyNet.StreamIsolation)
+				require.NotNil(t, proxyNet.ClearNet)
+			} else {
+				require.IsType(t, &tor.ClearNet{}, cfg.net)
+			}
+		})
+	}
+}
+
+// TestProxyBypassFlags verifies that both bypass options are repeatable and
+// preserve duplicates for the Tor module's validated de-duplication.
+func TestProxyBypassFlags(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	parser := flags.NewParser(&cfg, flags.Default)
+	_, err := parser.ParseArgs([]string{
+		"--no-proxy-target=example.com",
+		"--no-proxy-target=example.com",
+		"--tor.no-proxy-target=*.example.org",
+		"--tor.no-proxy-target=192.0.2.0/24",
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"example.com", "example.com"},
+		cfg.NoProxyTargets)
+	require.Equal(t, []string{"*.example.org", "192.0.2.0/24"},
+		cfg.Tor.NoProxyTargets)
+	require.NoError(t, configureNetwork(&cfg, "", ""))
+}
+
+// TestConfigureNetworkRejectsInvalidBypass verifies both proxy layers reject
+// malformed bypass targets instead of silently ignoring them.
+func TestConfigureNetworkRejectsInvalidBypass(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	cfg.NoProxyTargets = []string{"192.0.2.0/99"}
+	err := configureNetwork(&cfg, "", "")
+	require.ErrorContains(t, err, "invalid clearnet proxy configuration")
+
+	cfg = DefaultConfig()
+	cfg.Tor.Active = true
+	cfg.Tor.NoProxyTargets = []string{"bad host"}
+	err = configureNetwork(&cfg, "", "")
+	require.ErrorContains(t, err, "invalid Tor proxy configuration")
 }
 
 // TestSupplyEnvValue tests that the supplyEnvValue function works as

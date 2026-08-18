@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -413,6 +414,8 @@ type Config struct {
 	MinBackoff        time.Duration `long:"minbackoff" description:"Shortest backoff when reconnecting to persistent peers. Valid time units are {s, m, h}."`
 	MaxBackoff        time.Duration `long:"maxbackoff" description:"Longest backoff when reconnecting to persistent peers. Valid time units are {s, m, h}."`
 	ConnectionTimeout time.Duration `long:"connectiontimeout" description:"The timeout value for network connections. Valid time units are {ms, s, m, h}."`
+	SOCKS             string        `long:"socks" description:"The SOCKS5 proxy for clearnet TCP connections, in [username[:password]@]host:port format"`
+	NoProxyTargets    []string      `long:"no-proxy-target" description:"A host, *.domain zone, IP address, or CIDR that bypasses the clearnet SOCKS5 proxy. Can be repeated"`
 
 	DebugLevel string `short:"d" long:"debuglevel" description:"Logging level for all subsystems {trace, debug, info, warn, error, critical} -- You may also specify <global-level>,<subsystem>=<level>,<subsystem2>=<level>,... to set the log level for individual subsystems -- Use show to list available subsystems"`
 
@@ -891,6 +894,108 @@ func DefaultConfig() Config {
 	}
 }
 
+// parseSOCKSProxy parses URL-escaped credentials from a SOCKS5 proxy option,
+// normalizes the endpoint separately, and returns each component. The caller
+// must retain only the endpoint in public configuration.
+func parseSOCKSProxy(rawProxy string,
+	resolver lncfg.TCPResolver) (string, string, string, error) {
+
+	if rawProxy == "" {
+		return "", "", "", nil
+	}
+
+	proxyURL, err := url.Parse("socks5://" + rawProxy)
+	if err != nil {
+		return "", "", "", fmt.Errorf("invalid SOCKS5 proxy: %w", err)
+	}
+	if proxyURL.Host == "" || proxyURL.Path != "" ||
+		proxyURL.RawQuery != "" || proxyURL.Fragment != "" {
+
+		return "", "", "", fmt.Errorf("invalid SOCKS5 proxy %q",
+			rawProxy)
+	}
+	_, port, err := net.SplitHostPort(proxyURL.Host)
+	if err != nil || port == "" {
+		return "", "", "", errors.New("SOCKS5 proxy must use " +
+			"host:port format")
+	}
+
+	var username, password string
+	if proxyURL.User != nil {
+		username = proxyURL.User.Username()
+		password, _ = proxyURL.User.Password()
+		if username == "" {
+			return "", "", "", errors.New("SOCKS5 proxy username " +
+				"must not be empty")
+		}
+	}
+
+	proxyAddr, err := lncfg.ParseAddressString(
+		proxyURL.Host, "", resolver,
+	)
+	if err != nil {
+		return "", "", "", fmt.Errorf("error parsing SOCKS5 proxy: %w",
+			err)
+	}
+
+	return proxyAddr.String(), username, password, nil
+}
+
+// routingMode describes the effective high-level outbound routing policy.
+func routingMode(cfg *Config) string {
+	switch {
+	case !cfg.Tor.Active && cfg.SOCKS == "":
+		return "direct clearnet"
+
+	case !cfg.Tor.Active:
+		return "clearnet SOCKS5"
+
+	case !cfg.Tor.SkipProxyForClearNetTargets:
+		return "Tor"
+
+	case cfg.SOCKS == "":
+		return "Tor onions plus direct clearnet"
+
+	default:
+		return "Tor onions plus clearnet SOCKS5"
+	}
+}
+
+// configureNetwork constructs the effective network implementation after the
+// proxy endpoints and credentials have been parsed.
+func configureNetwork(cfg *Config, proxyUser, proxyPassword string) error {
+	clearNet, err := tor.NewClearNet(tor.ClearNetConfig{
+		SOCKS:          cfg.SOCKS,
+		Username:       proxyUser,
+		Password:       proxyPassword,
+		NoProxyTargets: cfg.NoProxyTargets,
+	})
+	if err != nil {
+		return fmt.Errorf("invalid clearnet proxy configuration: %w", err)
+	}
+	cfg.net = clearNet
+
+	if !cfg.Tor.Active {
+		return nil
+	}
+
+	proxyNet, err := tor.NewProxyNet(tor.ProxyNetConfig{
+		SOCKS:                       cfg.Tor.SOCKS,
+		DNS:                         cfg.Tor.DNS,
+		StreamIsolation:             cfg.Tor.StreamIsolation,
+		SkipProxyForClearNetTargets: cfg.Tor.SkipProxyForClearNetTargets,
+		ClearNet:                    clearNet,
+		NoProxyTargets:              cfg.Tor.NoProxyTargets,
+	})
+	if err != nil {
+		return fmt.Errorf("invalid Tor proxy configuration: %w", err)
+	}
+
+	cfg.net = proxyNet
+
+	return nil
+}
+
 // LoadConfig initializes and parses the config using a config file and command
 // line options.
 //
@@ -1262,6 +1367,16 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		return nil, mkErr("%v", err)
 	}
 
+	// Parse the generic SOCKS credentials separately so they are never
+	// retained in the public configuration or emitted by later logging.
+	proxyAddr, proxyUser, proxyPassword, err := parseSOCKSProxy(
+		cfg.SOCKS, cfg.net.ResolveTCPAddr,
+	)
+	if err != nil {
+		return nil, err
+	}
+	cfg.SOCKS = proxyAddr
+
 	// Validate the Tor config parameters.
 	socks, err := lncfg.ParseAddressString(
 		cfg.Tor.SOCKS, strconv.Itoa(defaultTorSOCKSPort),
@@ -1320,18 +1435,13 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		)
 	}
 
-	// Set up the network-related functions that will be used throughout
-	// the daemon. We use the standard Go "net" package functions by
-	// default. If we should be proxying all traffic through Tor, then
-	// we'll use the Tor proxy specific functions in order to avoid leaking
-	// our real information.
-	if cfg.Tor.Active {
-		cfg.net = &tor.ProxyNet{
-			SOCKS:                       cfg.Tor.SOCKS,
-			DNS:                         cfg.Tor.DNS,
-			StreamIsolation:             cfg.Tor.StreamIsolation,
-			SkipProxyForClearNetTargets: cfg.Tor.SkipProxyForClearNetTargets,
-		}
+	// Set up the clearnet network first. This is either direct or uses the
+	// generic SOCKS5 proxy, with explicit destinations allowed to bypass it.
+	// When Tor is active, onion destinations always use Tor. Clearnet
+	// destinations use Tor by default and switch to the clearnet network
+	// when global proxy skipping or a Tor-specific bypass target selects it.
+	if err := configureNetwork(&cfg, proxyUser, proxyPassword); err != nil {
+		return nil, err
 	}
 
 	if cfg.DisableListen && cfg.NAT {
@@ -2485,6 +2595,12 @@ func configToFlatMap(cfg Config) (map[string]string,
 	// redact is the helper function that redacts sensitive values like
 	// passwords.
 	redact := func(key, value string) string {
+		if key == "socks" || strings.HasSuffix(key, ".socks") {
+			if separator := strings.LastIndex(value, "@"); separator >= 0 {
+				return "[redacted]@" + value[separator+1:]
+			}
+		}
+
 		sensitiveKeySuffixes := []string{
 			"pass",
 			"password",
