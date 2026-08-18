@@ -59,7 +59,8 @@ OPTIONS_NO_LND_DEFAULT_VALUE_CHECK="channel-max-fee-exposure adminmacaroonpath \
     backupfilepath maxchansize bitcoin.chaindir bitcoin.defaultchanconfs \
     bitcoin.defaultremotedelay bitcoin.dnsseed signrpc.signermacaroonpath \
     walletrpc.walletkitmacaroonpath chainrpc.notifiermacaroonpath \
-    routerrpc.routermacaroonpath db.postgres.walletdb-with-global-lock" 
+    routerrpc.routermacaroonpath db.postgres.walletdb-with-global-lock \
+    no-proxy-target tor.no-proxy-target"
 
 
 # EXITCODE is returned at the end after all checks are performed and set to 1 

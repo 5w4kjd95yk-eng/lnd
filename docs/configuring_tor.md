@@ -1,9 +1,10 @@
 # Table of Contents
 1. [Overview](#overview)
 2. [Getting Started](#getting-started)
-3. [Tor Stream Isolation](#tor-stream-isolation)
-4. [Authentication](#authentication)
-5. [Listening for Inbound Connections](#listening-for-inbound-connections)
+3. [Routing Modes and Generic SOCKS5](#routing-modes-and-generic-socks5)
+4. [Tor Stream Isolation](#tor-stream-isolation)
+5. [Authentication](#authentication)
+6. [Listening for Inbound Connections](#listening-for-inbound-connections)
 
 ## Overview
 
@@ -118,6 +119,56 @@ $  ./lnd --tor.active
 This will allow you to make all outgoing connections over Tor. Listening is
 disabled to prevent inadvertent leaks.
 
+## Routing Modes and Generic SOCKS5
+
+The top-level `socks` option configures a SOCKS5 proxy for clearnet TCP
+connections. It is independent from `tor.socks`, so a hybrid node can use one
+proxy for clearnet and another for onion traffic.
+
+| Tor active | `tor.skip-proxy-for-clearnet-targets` | `socks` | Routing |
+| --- | --- | --- | --- |
+| No | N/A | Empty | Direct clearnet |
+| No | N/A | Set | Clearnet through generic SOCKS5 |
+| Yes | No | Either | Remote clearnet and onions through Tor |
+| Yes | Yes | Empty | Direct clearnet; onions through Tor |
+| Yes | Yes | Set | Clearnet through generic SOCKS5; onions through Tor |
+
+For example, this selects separate Tor and clearnet proxies:
+
+```text
+tor.active=true
+tor.skip-proxy-for-clearnet-targets=true
+tor.socks=127.0.0.1:9050
+socks=127.0.0.1:1080
+```
+
+The generic proxy accepts optional credentials in
+`[username[:password]@]host:port` form. The username and password use URL
+escaping, so reserved characters must be encoded. For example,
+`user%40example:p%3Ass@127.0.0.1:1080` sends username `user@example` and
+password `p:ss`. Credentials are removed from the retained configuration and
+redacted from configuration output and logs.
+
+Both proxy layers have repeatable bypass options:
+
+* `no-proxy-target` bypasses the generic clearnet SOCKS5 proxy.
+* `tor.no-proxy-target` bypasses Tor and selects the configured clearnet route.
+
+The defaults are `localhost`, `127.0.0.0/8`, and `::1/128`. Additional entries
+can be exact hostnames, `*.example.com` zones, IP addresses, or CIDR networks.
+Zones match subdomains but not the zone apex. Duplicate entries are harmless.
+Malformed entries stop startup instead of being ignored. Onion destinations
+never match bypass rules and always use Tor.
+
+A configured proxy is fail-closed: if it is unavailable or rejects a
+connection, `lnd` returns the connection error and does not retry directly.
+
+When Tor is active, hostname lookups use Tor's resolver and SRV requests reach
+`tor.dns` over Tor, including in hybrid and bypass modes. This prevents the
+generic proxy configuration from leaking these lookups through the system
+resolver. When Tor is disabled, `socks` covers TCP connections only and normal
+hostname resolution continues to use the system resolver.
+
 ## Tor Stream Isolation
 
 Our support for Tor also has an additional privacy enhancing modified: stream
@@ -131,6 +182,10 @@ specification of an additional argument:
 ```shell
 $  ./lnd --tor.active --tor.streamisolation
 ```
+
+Stream isolation is compatible with hybrid routing. Its randomized SOCKS5
+credentials are generated only for Tor streams and are never forwarded to the
+generic clearnet proxy.
 
 ## Authentication
 

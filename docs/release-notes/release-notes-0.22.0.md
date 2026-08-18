@@ -59,6 +59,12 @@
 
 ## Functional Enhancements
 
+* Added a generic authenticated SOCKS5 proxy for clearnet TCP connections,
+  including [dual-proxy Tor and clearnet
+  routing](https://github.com/lightningnetwork/lnd/issues/10106), validated
+  per-target bypass rules, fail-closed proxy errors, and Tor-routed DNS in
+  hybrid mode.
+
 ## RPC Additions
 
 * The `routerrpc.EstimateRouteFee` RPC now supports [restricting fee estimates
