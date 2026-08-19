@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"syscall"
 
 	"github.com/lightningnetwork/lnd/tor"
@@ -39,7 +40,7 @@ func CheckTorServiceStatus(tc *tor.Controller,
 	// the existing connection to make a GETINFO request since that socket
 	// has now been closed. As Tor daemon might not be running yet, we will
 	// attempt to make a new connection till Tor daemon is back.
-	case errors.Is(err, syscall.EPIPE):
+	case shouldReconnectForConnectionError(err):
 		log.Warnf("Tor connection lost, attempting a tor controller " +
 			"re-connection...")
 
@@ -63,6 +64,12 @@ func CheckTorServiceStatus(tc *tor.Controller,
 	default:
 		return err
 	}
+}
+
+// shouldReconnectForConnectionError reports whether a failed control
+// connection can be repaired by reconnecting to Tor.
+func shouldReconnectForConnectionError(err error) bool {
+	return errors.Is(err, syscall.EPIPE) || errors.Is(err, net.ErrClosed)
 }
 
 // shouldReconnectForServiceError reports whether controller recovery can
