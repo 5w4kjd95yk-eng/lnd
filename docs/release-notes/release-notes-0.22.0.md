@@ -22,6 +22,10 @@
 
 # Bug Fixes
 
+* Tor health-check recovery now restores every `lnd`-managed onion service
+  after a Tor restart, including both the node and watchtower services, while
+  preserving their existing identities and advertised addresses.
+
 * Bitcoind outbound peer health checks [now use](https://github.com/lightningnetwork/lnd/pull/10686)
   `getnetworkinfo.connections_out` instead of `getpeerinfo`. The same PR also
   [clarifies](https://github.com/lightningnetwork/lnd/issues/10568) the ZMQ
