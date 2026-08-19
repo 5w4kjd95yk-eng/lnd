@@ -236,3 +236,6 @@ replace github.com/lightningnetwork/lnd/kvdb => ./kvdb
 replace github.com/lightningnetwork/lnd/queue => ./queue
 
 replace github.com/lightningnetwork/lnd/ticker => ./ticker
+
+// Temporary while the stacked tor module change is awaiting a release tag.
+replace github.com/lightningnetwork/lnd/tor => ./tor

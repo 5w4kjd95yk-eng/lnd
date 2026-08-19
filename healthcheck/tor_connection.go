@@ -16,7 +16,7 @@ import (
 // open. In this case, we will attempt a restart on our tor controller. If the
 // tor daemon comes back, a new socket connection will then be created.
 func CheckTorServiceStatus(tc *tor.Controller,
-	createService func() error) error {
+	restoreServices func() error) error {
 
 	// Send a cmd using GETINFO onions/current and checks that our known
 	// onion serviceID can be found.
@@ -45,7 +45,17 @@ func CheckTorServiceStatus(tc *tor.Controller,
 
 		// If the restart fails, we will attempt again during our next
 		// healthcheck cycle.
-		return restartTorController(tc, createService)
+		return restartTorController(tc, restoreServices)
+
+	// An incomplete or inconsistent service set can occur when restoration
+	// failed partway through. Reconnect to remove every ephemeral service on
+	// the current control connection, then replay the complete registration
+	// set on a clean connection.
+	case shouldReconnectForServiceError(err):
+		log.Warnf("Tor onion service set is inconsistent, attempting a " +
+			"tor controller re-connection...")
+
+		return restartTorController(tc, restoreServices)
 
 	// If this is not a connection layer error, such as
 	// ErrServiceNotCreated or ErrServiceIDMismatch, there's little we can
@@ -55,10 +65,18 @@ func CheckTorServiceStatus(tc *tor.Controller,
 	}
 }
 
+// shouldReconnectForServiceError reports whether controller recovery can
+// repair an onion service state error.
+func shouldReconnectForServiceError(err error) bool {
+	return errors.Is(err, tor.ErrServiceIDMismatch) ||
+		errors.Is(err, tor.ErrNoServiceFound) ||
+		errors.Is(err, tor.ErrServiceNotCreated)
+}
+
 // restartTorController attempts to make a new connection to the Tor daemon and
-// re-create the Hidden Service.
+// restore every recorded onion service.
 func restartTorController(tc *tor.Controller,
-	createService func() error) error {
+	restoreServices func() error) error {
 
 	err := tc.Reconnect()
 
@@ -74,9 +92,9 @@ func restartTorController(tc *tor.Controller,
 		return err
 	}
 
-	// Recreate the Hidden Service.
-	if err := createService(); err != nil {
-		log.Errorf("Re-create service tor got err: %v", err)
+	// Restore all onion services on the new control connection.
+	if err := restoreServices(); err != nil {
+		log.Errorf("Restore tor onion services got err: %v", err)
 		return err
 	}
 

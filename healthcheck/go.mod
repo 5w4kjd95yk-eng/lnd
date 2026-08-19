@@ -24,3 +24,6 @@ require (
 )
 
 go 1.25.11
+
+// Temporary while the stacked tor module change is awaiting a release tag.
+replace github.com/lightningnetwork/lnd/tor => ../tor

@@ -2141,11 +2141,7 @@ func (s *server) createLivenessMonitor(ctx context.Context, cfg *Config,
 			func() error {
 				return healthcheck.CheckTorServiceStatus(
 					s.torController,
-					func() error {
-						return s.createNewHiddenService(
-							context.TODO(),
-						)
-					},
+					s.torController.RestoreOnionServices,
 				)
 			},
 			cfg.HealthChecks.TorConnection.Interval,
