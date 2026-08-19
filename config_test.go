@@ -85,8 +85,9 @@ func TestParseSOCKSProxy(t *testing.T) {
 			expectedUser:     "alice",
 		},
 		{
-			name:             "escaped credentials",
-			proxy:            "us%40er:p%3Ass%2Fword@127.0.0.1:9050",
+			name: "escaped credentials",
+			proxy: "us%40er:p%3Ass%2Fword@" +
+				"127.0.0.1:9050",
 			expectedEndpoint: "127.0.0.1:9050",
 			expectedUser:     "us@er",
 			expectedPassword: "p:ss/word",
@@ -121,7 +122,6 @@ func TestParseSOCKSProxy(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -191,7 +191,6 @@ func TestConfigureNetworkModes(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 

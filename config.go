@@ -971,7 +971,8 @@ func configureNetwork(cfg *Config, proxyUser, proxyPassword string) error {
 		NoProxyTargets: cfg.NoProxyTargets,
 	})
 	if err != nil {
-		return fmt.Errorf("invalid clearnet proxy configuration: %w", err)
+		return fmt.Errorf("invalid clearnet proxy "+
+			"configuration: %w", err)
 	}
 	cfg.net = clearNet
 
@@ -980,12 +981,13 @@ func configureNetwork(cfg *Config, proxyUser, proxyPassword string) error {
 	}
 
 	proxyNet, err := tor.NewProxyNet(tor.ProxyNetConfig{
-		SOCKS:                       cfg.Tor.SOCKS,
-		DNS:                         cfg.Tor.DNS,
-		StreamIsolation:             cfg.Tor.StreamIsolation,
-		SkipProxyForClearNetTargets: cfg.Tor.SkipProxyForClearNetTargets,
-		ClearNet:                    clearNet,
-		NoProxyTargets:              cfg.Tor.NoProxyTargets,
+		SOCKS:           cfg.Tor.SOCKS,
+		DNS:             cfg.Tor.DNS,
+		StreamIsolation: cfg.Tor.StreamIsolation,
+		SkipProxyForClearNetTargets: cfg.Tor.
+			SkipProxyForClearNetTargets,
+		ClearNet:       clearNet,
+		NoProxyTargets: cfg.Tor.NoProxyTargets,
 	})
 	if err != nil {
 		return fmt.Errorf("invalid Tor proxy configuration: %w", err)
@@ -1436,10 +1438,12 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 	}
 
 	// Set up the clearnet network first. This is either direct or uses the
-	// generic SOCKS5 proxy, with explicit destinations allowed to bypass it.
+	// generic SOCKS5 proxy, with explicit destinations allowed to bypass
+	// it.
 	// When Tor is active, onion destinations always use Tor. Clearnet
 	// destinations use Tor by default and switch to the clearnet network
-	// when global proxy skipping or a Tor-specific bypass target selects it.
+	// when global proxy skipping or a Tor-specific bypass target selects
+	// it.
 	if err := configureNetwork(&cfg, proxyUser, proxyPassword); err != nil {
 		return nil, err
 	}
@@ -2596,7 +2600,8 @@ func configToFlatMap(cfg Config) (map[string]string,
 	// passwords.
 	redact := func(key, value string) string {
 		if key == "socks" || strings.HasSuffix(key, ".socks") {
-			if separator := strings.LastIndex(value, "@"); separator >= 0 {
+			separator := strings.LastIndex(value, "@")
+			if separator >= 0 {
 				return "[redacted]@" + value[separator+1:]
 			}
 		}
